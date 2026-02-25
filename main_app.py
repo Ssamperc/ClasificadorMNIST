@@ -1,854 +1,669 @@
 """
-╔══════════════════════════════════════════════════════════════╗
-║        MNIST DIGIT CLASSIFIER — Clasificador Interactivo     ║
-║  Dibuja un dígito → el modelo predice y explica cómo lo hizo ║
-╚══════════════════════════════════════════════════════════════╝
+DIGIT CLASSIFIER
+- Dibuja un dígito → predicción automática
+- Corrige si se equivoca → el modelo aprende
+- Guarda todo en corrections.csv
 """
-import warnings
-warnings.filterwarnings("ignore")
+import warnings; warnings.filterwarnings("ignore")
 
 import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-import seaborn as sns
+import matplotlib.patches as mpatches
 from PIL import Image, ImageOps, ImageFilter
-import io
+import os, json, pickle
+from io import BytesIO
 
 from streamlit_drawable_canvas import st_canvas
-
 from sklearn.datasets import load_digits
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.naive_bayes import GaussianNB
-
 from sklearn.metrics import accuracy_score, confusion_matrix
 
-# ──────────────────────────────────────────────────────────────
-# CONFIG
-# ──────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="MNIST · Clasificador de Dígitos",
-    page_icon="✏️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# ─────────────────────────────────────────────
+# PAGE
+# ─────────────────────────────────────────────
+st.set_page_config("✏️ Digit Classifier", "✏️", layout="wide")
 
-# ──────────────────────────────────────────────────────────────
-# TEMA VISUAL — estética "terminal retro-futurista"
-# ──────────────────────────────────────────────────────────────
-BG      = "#050810"
-SURF    = "#0d1117"
-CARD    = "#111827"
-BORDER  = "#1f2937"
-ACCENT  = "#00FF88"       # verde neón
-ACCENT2 = "#FF6B35"       # naranja
-ACCENT3 = "#00BFFF"       # azul hielo
-WARN    = "#FFD700"
-TEXT    = "#e2e8f0"
-MUTED   = "#4b5563"
-GRID    = "#1f2937"
+# ─────────────────────────────────────────────
+# COLORES
+# ─────────────────────────────────────────────
+C = {
+    "bg":      "#0a0e1a",
+    "card":    "#111827",
+    "border":  "#1f2937",
+    "green":   "#22c55e",
+    "red":     "#ef4444",
+    "blue":    "#3b82f6",
+    "yellow":  "#f59e0b",
+    "text":    "#f1f5f9",
+    "muted":   "#6b7280",
+}
 
-DIGIT_PALETTE = [
-    "#FF6B6B","#FF9F43","#FECA57","#48CAE4","#00BFFF",
-    "#6C63FF","#A29BFE","#FD79A8","#00FF88","#74B9FF",
-]
+DIGIT_CLR = ["#f87171","#fb923c","#fbbf24","#a3e635","#34d399",
+             "#22d3ee","#818cf8","#c084fc","#f472b6","#94a3b8"]
 
 plt.rcParams.update({
-    "text.color": TEXT, "axes.labelcolor": TEXT,
-    "xtick.color": TEXT, "ytick.color": TEXT,
-    "figure.facecolor": BG, "axes.facecolor": SURF,
-    "axes.edgecolor": BORDER, "grid.color": GRID,
-    "legend.facecolor": CARD, "legend.edgecolor": BORDER,
-    "legend.labelcolor": TEXT, "font.family": "monospace",
+    "figure.facecolor": C["bg"], "axes.facecolor": C["card"],
+    "axes.edgecolor": C["border"], "text.color": C["text"],
+    "axes.labelcolor": C["text"], "xtick.color": C["text"],
+    "ytick.color": C["text"], "grid.color": C["border"],
 })
 
-def dax(ax):
-    ax.set_facecolor(SURF)
-    ax.tick_params(colors=TEXT, labelsize=8)
-    ax.xaxis.label.set_color(TEXT); ax.yaxis.label.set_color(TEXT)
-    ax.title.set_color(TEXT)
-    for sp in ax.spines.values(): sp.set_edgecolor(BORDER)
-    ax.grid(color=GRID, linewidth=0.4, alpha=0.6)
-    return ax
-
-# ──────────────────────────────────────────────────────────────
-# CSS
-# ──────────────────────────────────────────────────────────────
 st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;600;800&display=swap');
-
-html,body,[class*="css"]{{
-    background-color:{BG};
-    font-family:'Exo 2',sans-serif;
+html,body,[class*="css"]{{background:{C['bg']};color:{C['text']};font-family:'Segoe UI',sans-serif;}}
+.big-digit{{
+    font-size:7rem;font-weight:900;text-align:center;line-height:1;
+    text-shadow:0 0 40px currentColor;font-family:monospace;
 }}
-.mono{{font-family:'Share Tech Mono',monospace;}}
-
-/* Título */
-.hero-title{{
-    font-family:'Share Tech Mono',monospace;
-    font-size:2.4rem; font-weight:700; letter-spacing:3px;
-    color:{ACCENT}; text-shadow: 0 0 30px {ACCENT}88;
-    margin-bottom:.2rem;
+.conf-text{{font-size:1.4rem;font-weight:600;text-align:center;font-family:monospace;}}
+.card{{
+    background:{C['card']};border:1px solid {C['border']};
+    border-radius:14px;padding:1.2rem 1.4rem;margin:.4rem 0;
 }}
-.hero-sub{{color:{MUTED};font-size:.9rem;letter-spacing:2px;margin-bottom:1.5rem;}}
-
-/* Sección */
-.sec{{
-    font-family:'Share Tech Mono',monospace;
-    font-size:.72rem;letter-spacing:3px;text-transform:uppercase;
-    color:{ACCENT3};border-left:3px solid {ACCENT3};
-    padding-left:.6rem;margin:1.4rem 0 .7rem;
+.label{{color:{C['muted']};font-size:.72rem;letter-spacing:2px;text-transform:uppercase;}}
+.value{{font-size:1.2rem;font-weight:700;font-family:monospace;}}
+.badge{{
+    display:inline-block;padding:3px 12px;border-radius:20px;
+    font-size:.78rem;font-weight:600;font-family:monospace;
 }}
-
-/* Tarjeta de predicción */
-.pred-card{{
-    background:linear-gradient(135deg,{CARD},{SURF});
-    border:1px solid {ACCENT}44;
-    border-radius:16px;padding:1.5rem;text-align:center;
-    box-shadow: 0 0 40px {ACCENT}22;
-}}
-.pred-digit{{
-    font-family:'Share Tech Mono',monospace;
-    font-size:6rem;font-weight:700;
-    color:{ACCENT};text-shadow:0 0 60px {ACCENT};
-    line-height:1;
-}}
-.pred-label{{color:{MUTED};font-size:.8rem;letter-spacing:2px;margin-top:.4rem;}}
-.pred-conf{{
-    font-family:'Share Tech Mono',monospace;
-    font-size:1.5rem;color:{ACCENT2};margin-top:.5rem;
-}}
-
-/* Info boxes */
-.info-box{{
-    background:{CARD};border:1px solid {BORDER};
-    border-radius:10px;padding:.8rem 1rem;
-    margin:.3rem 0;
-}}
-.ib-label{{color:{MUTED};font-size:.7rem;letter-spacing:2px;text-transform:uppercase;}}
-.ib-val{{color:{TEXT};font-size:1.1rem;font-weight:600;font-family:'Share Tech Mono',monospace;}}
-
-/* Barra de confianza */
-.conf-bar-wrap{{background:{BORDER};border-radius:4px;height:10px;margin:4px 0;}}
-.conf-bar{{height:10px;border-radius:4px;transition:width .4s ease;}}
-
-/* Pasos del proceso */
 .step{{
-    background:{CARD};border-left:3px solid {ACCENT3};
-    border-radius:0 10px 10px 0;padding:.7rem 1rem;margin:.5rem 0;
+    background:{C['card']};border-left:3px solid {C['blue']};
+    border-radius:0 8px 8px 0;padding:.6rem .9rem;margin:.35rem 0;
+    font-size:.88rem;
 }}
-.step-num{{color:{ACCENT3};font-family:'Share Tech Mono';font-size:.75rem;letter-spacing:2px;}}
-.step-text{{color:{TEXT};font-size:.9rem;margin-top:.15rem;}}
-
-/* Modelo tag */
-.model-tag{{
-    display:inline-block;background:{ACCENT}22;border:1px solid {ACCENT}66;
-    color:{ACCENT};border-radius:6px;padding:2px 10px;
-    font-family:'Share Tech Mono';font-size:.75rem;letter-spacing:1px;
-}}
+.step-n{{color:{C['blue']};font-size:.7rem;font-weight:700;letter-spacing:1px;}}
+h3{{color:{C['text']};border-bottom:1px solid {C['border']};padding-bottom:.4rem;}}
 </style>
 """, unsafe_allow_html=True)
 
-# ──────────────────────────────────────────────────────────────
-# MODELOS DISPONIBLES
-# ──────────────────────────────────────────────────────────────
-AVAILABLE_MODELS = {
-    "Random Forest": {
-        "clf": RandomForestClassifier(n_estimators=200, random_state=42),
-        "desc": "Ensemble de 200 árboles de decisión. Robusto, sin necesidad de escalar.",
-        "icon": "🌲",
-    },
-    "SVM (RBF)": {
-        "clf": SVC(probability=True, kernel="rbf", C=10, gamma="scale"),
-        "desc": "Support Vector Machine con kernel RBF. Excelente para espacios de alta dimensión.",
-        "icon": "⚡",
-    },
-    "Logistic Regression": {
-        "clf": LogisticRegression(max_iter=2000, C=0.1, solver="saga"),
-        "desc": "Modelo lineal con regularización L2. Rápido e interpretable.",
-        "icon": "📈",
-    },
-    "K-Nearest Neighbors": {
-        "clf": KNeighborsClassifier(n_neighbors=5, metric="euclidean"),
-        "desc": "Clasifica por los 5 vecinos más cercanos en el espacio de píxeles.",
-        "icon": "🎯",
-    },
-    "Gradient Boosting": {
-        "clf": GradientBoostingClassifier(n_estimators=150, learning_rate=0.1),
-        "desc": "Boosting iterativo que corrige errores del modelo anterior.",
-        "icon": "🚀",
-    },
-    "Naive Bayes": {
-        "clf": GaussianNB(),
-        "desc": "Probabilístico. Asume independencia entre píxeles.",
-        "icon": "🎲",
-    },
+# ─────────────────────────────────────────────
+# ARCHIVOS PERSISTENTES
+# ─────────────────────────────────────────────
+CORRECTIONS_FILE = "corrections.csv"
+MODEL_FILE       = "model_state.pkl"
+
+def load_corrections():
+    if os.path.exists(CORRECTIONS_FILE):
+        try:
+            return pd.read_csv(CORRECTIONS_FILE)
+        except:
+            pass
+    return pd.DataFrame(columns=["pixels","true_label"])
+
+def save_correction(vec64: np.ndarray, label: int):
+    df = load_corrections()
+    row = pd.DataFrame([{"pixels": json.dumps(vec64.tolist()), "true_label": int(label)}])
+    df  = pd.concat([df, row], ignore_index=True)
+    df.to_csv(CORRECTIONS_FILE, index=False)
+    return len(df)
+
+def corrections_to_arrays(df):
+    if len(df) == 0:
+        return np.empty((0, 64)), np.empty(0, dtype=int)
+    X = np.array([json.loads(r) for r in df["pixels"]])
+    y = df["true_label"].values.astype(int)
+    return X, y
+
+# ─────────────────────────────────────────────
+# PREPROCESAMIENTO ← CLAVE PARA PRECISIÓN
+# ─────────────────────────────────────────────
+def canvas_to_vec64(img_data: np.ndarray) -> np.ndarray | None:
+    """
+    Convierte imagen RGBA del canvas (280×280) → vector 64 float
+    normalizado igual que sklearn digits (0-16 / 16 = 0-1).
+    
+    Pasos críticos:
+      1. Tomar canal de alpha/blanco como máscara del trazo
+      2. Recortar bounding box del dígito (crop tight)
+      3. Añadir padding proporcional (20% cada lado)
+      4. Redimensionar a 8×8 con antialiasing
+      5. Normalizar 0-1
+    """
+    if img_data is None:
+        return None
+
+    # Canal RGB promedio (el canvas dibuja blanco sobre negro)
+    gray = img_data[:, :, :3].mean(axis=2).astype(np.float32)
+
+    if gray.max() < 15:          # canvas vacío
+        return None
+
+    # ── Bounding box del trazo ───────────────────────────────
+    mask = gray > 20
+    rows = np.where(mask.any(axis=1))[0]
+    cols = np.where(mask.any(axis=0))[0]
+    if len(rows) == 0 or len(cols) == 0:
+        return None
+
+    r0, r1 = rows[0], rows[-1]
+    c0, c1 = cols[0], cols[-1]
+
+    # Recorte justo
+    digit_crop = gray[r0:r1+1, c0:c1+1]
+    h, w = digit_crop.shape
+
+    # ── Padding proporcional (para que no esté pegado al borde) ─
+    pad = max(h, w) // 4
+    canvas_size = max(h, w) + 2 * pad
+    padded = np.zeros((canvas_size, canvas_size), dtype=np.float32)
+    off_y  = (canvas_size - h) // 2
+    off_x  = (canvas_size - w) // 2
+    padded[off_y:off_y+h, off_x:off_x+w] = digit_crop
+
+    # ── Resize a 8×8 ────────────────────────────────────────
+    img_pil = Image.fromarray(padded.astype(np.uint8))
+    # Suavizar antes de reducir (reduce aliasing)
+    img_pil = img_pil.filter(ImageFilter.GaussianBlur(radius=0.5))
+    img_pil = img_pil.resize((8, 8), Image.LANCZOS)
+
+    arr = np.array(img_pil, dtype=np.float32)
+    arr = arr / arr.max() if arr.max() > 0 else arr   # normalizar 0-1
+    return arr.flatten()
+
+# ─────────────────────────────────────────────
+# ENTRENAMIENTO
+# ─────────────────────────────────────────────
+MODELS_DEF = {
+    "SVM (RBF)":           SVC(probability=True, C=10, gamma="scale"),
+    "Random Forest":       RandomForestClassifier(n_estimators=200, random_state=42),
+    "Logistic Regression": LogisticRegression(max_iter=2000, C=1.0, solver="saga"),
+    "KNN (k=5)":           KNeighborsClassifier(n_neighbors=5),
 }
 
-# ──────────────────────────────────────────────────────────────
-# ENTRENAMIENTO (cacheado)
-# ──────────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner="🔧 Entrenando modelos sobre Digits dataset…")
-def train_models():
-    digits = load_digits()
-    X, y   = digits.data / 16.0, digits.target   # normalizar 0-1
-
-    X_tr, X_te, y_tr, y_te = train_test_split(
+@st.cache_resource(show_spinner="⚙️ Entrenando modelos…")
+def train_base_models():
+    digits  = load_digits()
+    X, y    = digits.data / 16.0, digits.target   # → rango 0-1
+    Xtr, Xte, ytr, yte = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y)
 
     trained = {}
-    for name, info in AVAILABLE_MODELS.items():
-        pipe = Pipeline([
-            ("scaler", StandardScaler()),
-            ("clf",    info["clf"].__class__(**info["clf"].get_params())),
-        ])
-        pipe.fit(X_tr, y_tr)
-        acc  = accuracy_score(y_te, pipe.predict(X_te))
-        trained[name] = {
-            "pipe":  pipe,
-            "acc":   acc,
-            "desc":  info["desc"],
-            "icon":  info["icon"],
-            "X_te":  X_te,
-            "y_te":  y_te,
-            "X_tr":  X_tr,
-            "y_tr":  y_tr,
-            "X_all": X,
-            "y_all": y,
-        }
+    for name, clf in MODELS_DEF.items():
+        pipe = Pipeline([("sc", StandardScaler()),
+                         ("clf", clf.__class__(**clf.get_params()))])
+        pipe.fit(Xtr, ytr)
+        acc  = accuracy_score(yte, pipe.predict(Xte))
+        trained[name] = {"pipe": pipe, "acc": acc,
+                         "Xtr": Xtr, "ytr": ytr,
+                         "Xte": Xte, "yte": yte,
+                         "X_all": X, "y_all": y}
     return trained, digits
 
-trained_models, digits_ds = train_models()
+trained_models, digits_ds = train_base_models()
 
-# ──────────────────────────────────────────────────────────────
+def retrain_with_corrections(model_name: str):
+    """Re-entrena el pipeline base + correcciones del usuario."""
+    df_corr = load_corrections()
+    if len(df_corr) == 0:
+        return trained_models[model_name]["pipe"]
+
+    Xc, yc    = corrections_to_arrays(df_corr)
+    base_info = trained_models[model_name]
+    X_aug = np.vstack([base_info["X_all"], Xc])
+    y_aug = np.hstack([base_info["y_all"],  yc])
+
+    clf   = MODELS_DEF[model_name].__class__(**MODELS_DEF[model_name].get_params())
+    pipe  = Pipeline([("sc", StandardScaler()), ("clf", clf)])
+    pipe.fit(X_aug, y_aug)
+    return pipe
+
+# ─────────────────────────────────────────────
+# ESTADO DE SESIÓN
+# ─────────────────────────────────────────────
+if "last_vec"       not in st.session_state: st.session_state.last_vec       = None
+if "last_pred"      not in st.session_state: st.session_state.last_pred      = None
+if "last_probs"     not in st.session_state: st.session_state.last_probs     = None
+if "correction_done" not in st.session_state: st.session_state.correction_done = False
+if "retrained_pipe" not in st.session_state: st.session_state.retrained_pipe = None
+if "n_corrections"  not in st.session_state:
+    df = load_corrections()
+    st.session_state.n_corrections = len(df)
+
+# ─────────────────────────────────────────────
 # SIDEBAR
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 with st.sidebar:
-    st.markdown(f"<div style='color:{ACCENT};font-family:Share Tech Mono;font-size:1.1rem;letter-spacing:2px;'>⚙ CONTROL PANEL</div>", unsafe_allow_html=True)
-    st.markdown("---")
+    st.markdown(f"<div style='font-size:1.3rem;font-weight:700;color:{C['green']};margin-bottom:.5rem;'>✏️ Digit Classifier</div>", unsafe_allow_html=True)
 
-    st.markdown("**🤖 Modelo de clasificación**")
     model_name = st.selectbox(
-        "Selecciona modelo",
-        list(AVAILABLE_MODELS.keys()),
+        "🤖 Modelo",
+        list(MODELS_DEF.keys()),
         index=0,
-        label_visibility="collapsed",
+        help="Elige el algoritmo de clasificación"
     )
 
-    info = trained_models[model_name]
+    pipe = (st.session_state.retrained_pipe
+            if st.session_state.retrained_pipe is not None
+            else trained_models[model_name]["pipe"])
+
+    acc_base = trained_models[model_name]["acc"]
     st.markdown(f"""
-    <div class="info-box">
-        <div class="ib-label">Accuracy en test</div>
-        <div class="ib-val">{info['acc']*100:.2f}%</div>
+    <div class="card">
+        <div class="label">Precisión base</div>
+        <div class="value" style="color:{C['green']};">{acc_base*100:.1f}%</div>
     </div>
-    <div class="info-box">
-        <div class="ib-label">Descripción</div>
-        <div style="color:{TEXT};font-size:.82rem;margin-top:.2rem;">{info['desc']}</div>
+    <div class="card">
+        <div class="label">Correcciones guardadas</div>
+        <div class="value" style="color:{C['yellow']};">{st.session_state.n_corrections}</div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.markdown("**✏️ Herramienta de dibujo**")
-    stroke_width = st.slider("Grosor del trazo", 10, 40, 22)
-    canvas_bg    = "#000000"
+    st.divider()
+    stroke_w = st.slider("✏️ Grosor del trazo", 12, 50, 25)
 
-    st.markdown("---")
-    st.markdown("**🔬 Explicabilidad**")
-    show_neighbors    = st.checkbox("Mostrar vecinos similares", True)
-    show_pixel_imp    = st.checkbox("Mapa de importancia (pixels)", True)
-    show_topk         = st.number_input("Top-K probabilidades a mostrar", 3, 10, 5)
-    show_all_probs    = st.checkbox("Barra completa de probabilidades", True)
+    st.divider()
+    st.markdown("**💡 Cómo usar:**")
+    for paso in [
+        "1️⃣  Dibuja un dígito",
+        "2️⃣  La predicción aparece sola",
+        "3️⃣  Si falla, indica cuál era",
+        "4️⃣  El modelo aprende y mejora",
+    ]:
+        st.markdown(f"<div style='font-size:.85rem;padding:.2rem 0;'>{paso}</div>", unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.markdown("**📦 Dataset**")
-    st.markdown(f"""
-    <div class="info-box">
-        <div class="ib-label">Muestras totales</div>
-        <div class="ib-val">1 797</div>
-    </div>
-    <div class="info-box">
-        <div class="ib-label">Resolución imagen</div>
-        <div class="ib-val">8 × 8 px</div>
-    </div>
-    <div class="info-box">
-        <div class="ib-label">Clases</div>
-        <div class="ib-val">10 (0 – 9)</div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.divider()
+    if st.button("🔄 Re-entrenar con mis correcciones", use_container_width=True):
+        with st.spinner("Re-entrenando…"):
+            new_pipe = retrain_with_corrections(model_name)
+            st.session_state.retrained_pipe = new_pipe
+            pipe = new_pipe
+        st.success("✅ Modelo actualizado con tus correcciones")
 
-# ──────────────────────────────────────────────────────────────
+    if st.session_state.n_corrections > 0:
+        df_corr = load_corrections()
+        csv_bytes = df_corr.to_csv(index=False).encode()
+        st.download_button(
+            "💾 Descargar correcciones (.csv)",
+            data=csv_bytes,
+            file_name="corrections.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+# ─────────────────────────────────────────────
 # HEADER
-# ──────────────────────────────────────────────────────────────
-st.markdown(f'<div class="hero-title">✏ DIGIT.AI</div>', unsafe_allow_html=True)
-st.markdown(f'<div class="hero-sub">CLASIFICADOR INTERACTIVO DE DÍGITOS MANUSCRITOS · MNIST/DIGITS</div>', unsafe_allow_html=True)
+# ─────────────────────────────────────────────
+st.markdown(f"<h1 style='font-size:2rem;margin-bottom:.1rem;'>✏️ Clasificador de Dígitos</h1>", unsafe_allow_html=True)
+st.markdown(f"<p style='color:{C['muted']};margin-bottom:1.2rem;'>Dibuja un número del 0 al 9 y el modelo te dirá qué es — y aprenderá si se equivoca</p>", unsafe_allow_html=True)
 
-# ──────────────────────────────────────────────────────────────
-# LAYOUT PRINCIPAL: Canvas ← | → Predicción
-# ──────────────────────────────────────────────────────────────
-col_draw, col_pred = st.columns([1, 1], gap="large")
+# ─────────────────────────────────────────────
+# LAYOUT PRINCIPAL
+# ─────────────────────────────────────────────
+col_canvas, col_result = st.columns([1, 1], gap="large")
 
-# ── CANVAS ────────────────────────────────────────────────────
-with col_draw:
-    st.markdown('<div class="sec">// DIBUJA UN DÍGITO AQUÍ</div>', unsafe_allow_html=True)
-    st.markdown(f"<div style='color:{MUTED};font-size:.8rem;margin-bottom:.5rem;'>Dibuja un número del 0 al 9 con el mouse o dedo</div>", unsafe_allow_html=True)
-
+# ── CANVAS ────────────────────────────────────
+with col_canvas:
+    st.markdown("### 🖊️ Dibuja aquí")
     canvas_result = st_canvas(
         fill_color="rgba(0,0,0,0)",
-        stroke_width=stroke_width,
+        stroke_width=stroke_w,
         stroke_color="#FFFFFF",
-        background_color=canvas_bg,
-        height=280,
-        width=280,
+        background_color="#000000",
+        height=300,
+        width=300,
         drawing_mode="freedraw",
-        key="canvas",
+        key="main_canvas",
         display_toolbar=True,
     )
-
     col_b1, col_b2 = st.columns(2)
-    with col_b1:
-        if st.button("🗑️ Limpiar canvas", use_container_width=True):
-            st.rerun()
     with col_b2:
-        use_sample = st.button("🎲 Dígito aleatorio", use_container_width=True)
+        use_random = st.button("🎲 Ejemplo aleatorio", use_container_width=True)
 
-# ──────────────────────────────────────────────────────────────
-# PROCESAR IMAGEN
-# ──────────────────────────────────────────────────────────────
-def preprocess_canvas(img_data: np.ndarray) -> np.ndarray | None:
-    """Convierte la imagen del canvas (280×280 RGBA) → vector 64 normalizado."""
-    if img_data is None:
-        return None
-    # Canal alfa como máscara de trazos
-    img_gray = img_data[:, :, 3].astype(np.float32)
-    if img_gray.max() < 10:
-        return None                          # canvas vacío
-    img_pil = Image.fromarray(img_gray.astype(np.uint8))
-    img_pil = img_pil.resize((8, 8), Image.LANCZOS)
-    img_arr = np.array(img_pil, dtype=np.float32)
-    img_arr = img_arr / img_arr.max() * 16.0 if img_arr.max() > 0 else img_arr
-    return img_arr.flatten() / 16.0          # normalizado 0-1, 64 features
+# ── PREDICCIÓN ────────────────────────────────
+with col_result:
+    st.markdown("### 🎯 Predicción")
 
-def preprocess_sample(x_raw: np.ndarray) -> np.ndarray:
-    """Dígito del dataset ya normalizado (0-1), lo devuelve tal cual."""
-    return x_raw / 16.0 if x_raw.max() > 1 else x_raw
+    # Obtener vector
+    vec64 = None
+    is_random = False
 
-# ──────────────────────────────────────────────────────────────
-# OBTENER VECTOR DE ENTRADA
-# ──────────────────────────────────────────────────────────────
-sample_digit   = None
-sample_label   = None
-input_vector   = None
-input_source   = None
+    if use_random:
+        idx  = np.random.randint(0, len(digits_ds.data))
+        vec64 = digits_ds.data[idx] / 16.0
+        is_random = True
+        true_random_label = int(digits_ds.target[idx])
+    elif canvas_result.image_data is not None:
+        vec64 = canvas_to_vec64(canvas_result.image_data)
 
-if use_sample:
-    idx = np.random.randint(0, len(digits_ds.data))
-    sample_digit = digits_ds.data[idx] / 16.0
-    sample_label = int(digits_ds.target[idx])
-    input_vector = sample_digit
-    input_source = "sample"
-elif canvas_result.image_data is not None:
-    vec = preprocess_canvas(canvas_result.image_data)
-    if vec is not None:
-        input_vector = vec
-        input_source = "canvas"
-
-# ──────────────────────────────────────────────────────────────
-# PREDICCIÓN Y VISUALIZACIÓN
-# ──────────────────────────────────────────────────────────────
-with col_pred:
-    st.markdown('<div class="sec">// RESULTADO DE CLASIFICACIÓN</div>', unsafe_allow_html=True)
-
-    if input_vector is None:
-        st.markdown(f"""
-        <div style="background:{CARD};border:1px dashed {BORDER};border-radius:16px;
-                    padding:3rem;text-align:center;margin-top:.5rem;">
-            <div style="font-size:3rem;margin-bottom:1rem;">✏️</div>
-            <div style="color:{MUTED};font-family:'Share Tech Mono';font-size:.85rem;letter-spacing:2px;">
-                DIBUJA UN DÍGITO<br>PARA COMENZAR
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        pipe  = trained_models[model_name]["pipe"]
-        probs = pipe.predict_proba(input_vector.reshape(1, -1))[0]
+    if vec64 is not None:
+        st.session_state.last_vec = vec64
+        probs = pipe.predict_proba(vec64.reshape(1, -1))[0]
         pred  = int(np.argmax(probs))
         conf  = float(probs[pred])
-        top_k_idx = np.argsort(probs)[::-1][:int(show_topk)]
+        st.session_state.last_pred  = pred
+        st.session_state.last_probs = probs
+        st.session_state.correction_done = False
 
-        # Colorear confianza
-        if conf >= 0.85:   conf_color = ACCENT
-        elif conf >= 0.55: conf_color = WARN
-        else:              conf_color = ACCENT2
+        # Color según confianza
+        clr = C["green"] if conf > 0.75 else C["yellow"] if conf > 0.45 else C["red"]
 
-        # Tarjeta principal
+        # Mostrar dígito predicho grande
         st.markdown(f"""
-        <div class="pred-card">
-            <div class="pred-label">EL MODELO PREDICE</div>
-            <div class="pred-digit" style="color:{DIGIT_PALETTE[pred]};
-                 text-shadow:0 0 60px {DIGIT_PALETTE[pred]};">{pred}</div>
-            <div class="pred-conf" style="color:{conf_color};">
-                {conf*100:.1f}% confianza
+        <div class="card" style="border-color:{clr}44;text-align:center;padding:1.5rem;">
+            <div class="label" style="margin-bottom:.5rem;">EL MODELO DICE</div>
+            <div class="big-digit" style="color:{DIGIT_CLR[pred]};">{pred}</div>
+            <div class="conf-text" style="color:{clr};margin-top:.5rem;">{conf*100:.0f}% confianza</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if is_random:
+            match = pred == true_random_label
+            badge_c = C["green"] if match else C["red"]
+            badge_t = f"✅ Correcto (real: {true_random_label})" if match else f"❌ Falló (real: {true_random_label})"
+            st.markdown(f"<div style='text-align:center;margin-top:.4rem;'><span class='badge' style='background:{badge_c}22;color:{badge_c};border:1px solid {badge_c}66;'>{badge_t}</span></div>", unsafe_allow_html=True)
+
+        # ── Barra de probabilidades ────────────────────────
+        st.markdown(f"<div style='margin-top:1rem;margin-bottom:.3rem;color:{C['muted']};font-size:.75rem;letter-spacing:1px;'>PROBABILIDAD POR DÍGITO</div>", unsafe_allow_html=True)
+        for d in range(10):
+            p   = float(probs[d])
+            w   = int(p * 100)
+            col = DIGIT_CLR[d]
+            bold = "font-weight:700;" if d == pred else ""
+            st.markdown(f"""
+            <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
+                <div style="width:14px;font-size:.9rem;font-family:monospace;
+                            color:{col};text-align:center;{bold}">{d}</div>
+                <div style="flex:1;background:{C['border']};border-radius:3px;height:10px;overflow:hidden;">
+                    <div style="width:{w}%;height:100%;background:{col};border-radius:3px;opacity:.85;"></div>
+                </div>
+                <div style="width:38px;font-size:.75rem;font-family:monospace;
+                            color:{C['muted']};text-align:right;">{p*100:.0f}%</div>
             </div>
-            <div style="margin-top:.6rem;">
-                <span class="model-tag">{AVAILABLE_MODELS[model_name]['icon']} {model_name}</span>
+            """, unsafe_allow_html=True)
+
+    else:
+        st.markdown(f"""
+        <div class="card" style="text-align:center;padding:3rem 1rem;">
+            <div style="font-size:3.5rem;margin-bottom:.8rem;">✏️</div>
+            <div style="color:{C['muted']};font-size:.9rem;">
+                Dibuja un número<br>para ver la predicción
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        if input_source == "sample" and sample_label is not None:
-            correct = pred == sample_label
-            badge_color = ACCENT if correct else ACCENT2
-            badge_text  = f"✅ CORRECTO (real: {sample_label})" if correct else f"❌ ERROR (real: {sample_label})"
-            st.markdown(f"""
-            <div style="text-align:center;margin-top:.5rem;font-family:'Share Tech Mono';
-                        font-size:.8rem;color:{badge_color};">{badge_text}</div>
-            """, unsafe_allow_html=True)
+# ─────────────────────────────────────────────
+# SECCIÓN DE CORRECCIÓN
+# ─────────────────────────────────────────────
+if st.session_state.last_pred is not None and not st.session_state.correction_done:
+    st.divider()
+    st.markdown("### 🔧 ¿Se equivocó el modelo?")
+    st.markdown(f"<p style='color:{C['muted']};font-size:.88rem;'>Si la predicción es incorrecta, selecciona cuál era el dígito real. El modelo guardará este ejemplo para aprender.</p>", unsafe_allow_html=True)
 
-        # Top-K probabilidades
-        if show_all_probs:
-            st.markdown(f'<div class="sec" style="margin-top:.8rem;">// PROBABILIDADES POR CLASE</div>', unsafe_allow_html=True)
+    cols_digits = st.columns(10)
+    for d in range(10):
+        with cols_digits[d]:
+            is_pred = d == st.session_state.last_pred
+            btn_style = f"background:{DIGIT_CLR[d]}33;border:2px solid {DIGIT_CLR[d]};" if is_pred else ""
+            if st.button(
+                str(d),
+                key=f"corr_{d}",
+                use_container_width=True,
+                type="primary" if is_pred else "secondary",
+            ):
+                if st.session_state.last_vec is not None:
+                    n = save_correction(st.session_state.last_vec, d)
+                    st.session_state.n_corrections = n
+                    st.session_state.correction_done = True
+                    if d == st.session_state.last_pred:
+                        st.success(f"✅ Confirmado: es un {d}. ¡Guardado!")
+                    else:
+                        st.success(f"📝 Corregido: era un {d}, no un {st.session_state.last_pred}. ¡Aprendido!")
+                    st.rerun()
 
-            for i in top_k_idx:
-                p     = float(probs[i])
-                bar_w = int(p * 100)
-                col_b = DIGIT_PALETTE[i]
-                is_top = "font-weight:700;" if i == pred else ""
-                st.markdown(f"""
-                <div style="display:flex;align-items:center;gap:8px;margin:3px 0;">
-                    <div style="font-family:'Share Tech Mono';font-size:.9rem;
-                                color:{col_b};width:18px;text-align:center;{is_top}">{i}</div>
-                    <div style="flex:1;background:{BORDER};border-radius:4px;height:12px;overflow:hidden;">
-                        <div style="width:{bar_w}%;height:100%;background:{col_b};
-                                    border-radius:4px;opacity:0.85;"></div>
-                    </div>
-                    <div style="font-family:'Share Tech Mono';font-size:.8rem;color:{TEXT};
-                                width:48px;text-align:right;">{p*100:.1f}%</div>
-                </div>
-                """, unsafe_allow_html=True)
+# ─────────────────────────────────────────────
+# TABS DE ANÁLISIS (debajo, opcionales)
+# ─────────────────────────────────────────────
+st.divider()
+tab_viz, tab_how, tab_stats, tab_learn = st.tabs([
+    "🖼️ Ver imagen procesada",
+    "📖 ¿Cómo funciona?",
+    "📊 Estadísticas del modelo",
+    "🧠 Mis correcciones",
+])
 
-# ──────────────────────────────────────────────────────────────
-# FILA INFERIOR — EXPLICABILIDAD
-# ──────────────────────────────────────────────────────────────
-if input_vector is not None:
-    st.markdown("---")
+# ── VER IMAGEN PROCESADA ─────────────────────
+with tab_viz:
+    if st.session_state.last_vec is not None:
+        vec = st.session_state.last_vec
+        pred = st.session_state.last_pred
 
-    pipe  = trained_models[model_name]["pipe"]
-    probs = pipe.predict_proba(input_vector.reshape(1, -1))[0]
-    pred  = int(np.argmax(probs))
+        fig, axes = plt.subplots(1, 4, figsize=(13, 3.5))
+        fig.patch.set_facecolor(C["bg"])
 
-    tab_process, tab_pixels, tab_neighbors, tab_cm, tab_how = st.tabs([
-        "🔄 Proceso paso a paso",
-        "🖼️ Visualización del input",
-        "👥 Vecinos similares",
-        "📊 Matriz de confusión",
-        "📖 ¿Cómo funciona?",
-    ])
-
-    # ── PROCESO PASO A PASO ────────────────────────────────────
-    with tab_process:
-        st.markdown('<div class="sec">// PIPELINE DE CLASIFICACIÓN</div>', unsafe_allow_html=True)
-
-        steps_info = [
-            ("1. CAPTURA", f"Se captura la imagen dibujada ({280}×{280} px) desde el canvas."),
-            ("2. REDIMENSIÓN", "La imagen se escala a 8×8 píxeles (64 valores) para coincidir con el formato del dataset Digits."),
-            ("3. NORMALIZACIÓN", f"Los valores de píxel se normalizan al rango [0, 1]. Antes del escalado interno, el StandardScaler del pipeline resta la media y divide por la desviación estándar aprendida en el entrenamiento."),
-            ("4. EXTRACCIÓN DE FEATURES", f"El vector resultante tiene {64} features. Cada feature = intensidad de un pixel de la cuadrícula 8×8."),
-            ("5. CLASIFICACIÓN", f"El modelo {model_name} calcula la probabilidad para cada uno de los 10 dígitos."),
-            ("6. DECISIÓN", f"Se selecciona el dígito con mayor probabilidad: → {pred} ({probs[pred]*100:.1f}%)"),
-        ]
-
-        for title, text in steps_info:
-            st.markdown(f"""
-            <div class="step">
-                <div class="step-num">{title}</div>
-                <div class="step-text">{text}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        # Diagrama visual del pipeline
-        st.markdown('<div class="sec">// REPRESENTACIÓN DEL VECTOR DE ENTRADA</div>', unsafe_allow_html=True)
-        fig, axes = plt.subplots(1, 3, figsize=(12, 3.5))
-        fig.patch.set_facecolor(BG)
-
-        # a) Imagen 8x8
+        # 1. Imagen 8x8
         ax = axes[0]
-        ax.set_facecolor(SURF)
-        ax.imshow(input_vector.reshape(8, 8), cmap="plasma", interpolation="nearest",
-                  vmin=0, vmax=1)
-        ax.set_title("Input (8×8)", color=TEXT, fontsize=9)
+        ax.set_facecolor(C["card"])
+        im = ax.imshow(vec.reshape(8,8), cmap="plasma", interpolation="nearest", vmin=0, vmax=1)
+        ax.set_title("Tu dígito (8×8)", fontsize=9)
         ax.axis("off")
+        # grilla
         for i in range(9):
-            ax.axhline(i - 0.5, color=BG, linewidth=0.5)
-            ax.axvline(i - 0.5, color=BG, linewidth=0.5)
+            ax.axhline(i-.5, color="#000", lw=.5)
+            ax.axvline(i-.5, color="#000", lw=.5)
 
-        # b) Heatmap con valores
+        # 2. Valores numéricos
         ax2 = axes[1]
-        ax2.set_facecolor(SURF)
-        mat = input_vector.reshape(8, 8)
-        im  = ax2.imshow(mat, cmap="plasma", interpolation="nearest", vmin=0, vmax=1)
+        ax2.set_facecolor(C["card"])
+        mat = vec.reshape(8, 8)
+        ax2.imshow(mat, cmap="plasma", interpolation="nearest", vmin=0, vmax=1)
         for r in range(8):
             for c in range(8):
                 v = mat[r, c]
-                color = "white" if v < 0.5 else "black"
-                ax2.text(c, r, f"{v:.1f}", ha="center", va="center",
-                         fontsize=5, color=color)
-        ax2.set_title("Valores de intensidad", color=TEXT, fontsize=9)
+                tc = "white" if v < 0.5 else "black"
+                ax2.text(c, r, f"{v:.1f}", ha="center", va="center", fontsize=5, color=tc)
+        ax2.set_title("Intensidades", fontsize=9)
         ax2.axis("off")
-        plt.colorbar(im, ax=ax2, shrink=0.8, label="Intensidad")
 
-        # c) Vector 1D
-        ax3 = axes[2]
-        dax(ax3)
-        ax3.bar(range(64), input_vector, color=ACCENT3, alpha=0.7, width=1.0)
-        ax3.set_xlim(-1, 64)
-        ax3.set_title("Vector 64D (input al modelo)", color=TEXT, fontsize=9)
-        ax3.set_xlabel("Índice de pixel")
-        ax3.set_ylabel("Intensidad")
-
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-
-    # ── VISUALIZACIÓN DEL INPUT ────────────────────────────────
-    with tab_pixels:
-        st.markdown('<div class="sec">// ANÁLISIS VISUAL DEL DÍGITO INGRESADO</div>', unsafe_allow_html=True)
-
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            fig, ax = plt.subplots(figsize=(4, 4))
-            fig.patch.set_facecolor(BG)
-            ax.set_facecolor(BG)
-            im = ax.imshow(input_vector.reshape(8, 8), cmap="plasma",
-                           interpolation="nearest", vmin=0, vmax=1)
-            ax.set_title(f"Tu dígito → {pred}", color=DIGIT_PALETTE[pred], fontsize=12)
-            ax.axis("off")
-            plt.colorbar(im, ax=ax, shrink=0.8)
-            fig.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
-
-        with c2:
-            if show_pixel_imp:
-                st.markdown('<div class="sec">// MAPA DE IMPORTANCIA DE PIXELS</div>', unsafe_allow_html=True)
-                clf_step = trained_models[model_name]["pipe"]["clf"]
-
-                if hasattr(clf_step, "feature_importances_"):
-                    imp = clf_step.feature_importances_
-                    method_text = "Importancia de features (Random Forest / Extra Trees)"
-                elif hasattr(clf_step, "coef_"):
-                    # Para clasificación multiclase: importancia relativa al dígito predicho
-                    coef = clf_step.coef_
-                    imp  = np.abs(coef[pred]) / np.abs(coef[pred]).max()
-                    method_text = f"Magnitud de coeficientes para dígito {pred}"
-                else:
-                    imp = None
-                    method_text = "Importancia no disponible para este modelo"
-
-                if imp is not None:
-                    fig, axes2 = plt.subplots(1, 2, figsize=(9, 4))
-                    fig.patch.set_facecolor(BG)
-
-                    ax_a = axes2[0]
-                    ax_a.set_facecolor(BG)
-                    ax_a.imshow(imp.reshape(8, 8), cmap="hot", interpolation="bilinear",
-                                vmin=0)
-                    ax_a.set_title("Pixels más importantes", color=TEXT, fontsize=9)
-                    ax_a.axis("off")
-
-                    # Superposición: input × importancia
-                    ax_b = axes2[1]
-                    ax_b.set_facecolor(BG)
-                    overlay = input_vector * imp
-                    overlay = overlay / overlay.max() if overlay.max() > 0 else overlay
-                    ax_b.imshow(overlay.reshape(8, 8), cmap="inferno",
-                                interpolation="bilinear", vmin=0, vmax=1)
-                    ax_b.set_title("Input × Importancia (solapado)", color=TEXT, fontsize=9)
-                    ax_b.axis("off")
-
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    plt.close(fig)
-
-                    st.markdown(f"<div style='color:{MUTED};font-size:.78rem;margin-top:.3rem;'>{method_text}</div>",
-                                unsafe_allow_html=True)
-                else:
-                    st.info(method_text)
-
-        # Comparar con promedio de clase
-        st.markdown('<div class="sec">// COMPARACIÓN CON PROMEDIO DE CLASE PREDICHA</div>', unsafe_allow_html=True)
+        # 3. Promedio de clase predicha
         X_all = trained_models[model_name]["X_all"]
         y_all = trained_models[model_name]["y_all"]
+        avg   = X_all[y_all == pred].mean(axis=0).reshape(8, 8)
+        ax3   = axes[2]
+        ax3.set_facecolor(C["card"])
+        ax3.imshow(avg, cmap="plasma", interpolation="bilinear", vmin=0, vmax=1)
+        ax3.set_title(f"Promedio clase {pred}", fontsize=9)
+        ax3.axis("off")
 
-        fig, axes3 = plt.subplots(1, 4, figsize=(14, 3.5))
-        fig.patch.set_facecolor(BG)
-        imgs_to_show = [
-            (input_vector.reshape(8, 8), f"Tu input → pred: {pred}", DIGIT_PALETTE[pred]),
-        ]
-        for digit in [pred] + [d for d in range(10) if d != pred][:2]:
-            mask = y_all == digit
-            avg  = X_all[mask].mean(axis=0).reshape(8, 8)
-            imgs_to_show.append((avg, f"Promedio clase {digit}", DIGIT_PALETTE[digit]))
-
-        for ax, (img, title, color) in zip(axes3, imgs_to_show):
-            ax.set_facecolor(BG)
-            ax.imshow(img, cmap="plasma", interpolation="bilinear", vmin=0, vmax=1)
-            ax.set_title(title, color=color, fontsize=8, pad=4)
-            ax.axis("off")
-
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-
-    # ── VECINOS MÁS SIMILARES ─────────────────────────────────
-    with tab_neighbors:
-        st.markdown('<div class="sec">// K VECINOS MÁS SIMILARES EN EL DATASET</div>', unsafe_allow_html=True)
-
-        if show_neighbors:
-            X_all = trained_models[model_name]["X_all"]
-            y_all = trained_models[model_name]["y_all"]
-
-            # Distancia euclidiana
-            dists = np.linalg.norm(X_all - input_vector, axis=1)
-            top_n = 10
-            nn_idx = np.argsort(dists)[:top_n]
-
-            fig, axes4 = plt.subplots(2, 5, figsize=(12, 5))
-            fig.patch.set_facecolor(BG)
-
-            for i, idx in enumerate(nn_idx):
-                ax = axes4[i // 5, i % 5]
-                ax.set_facecolor(BG)
-                label  = int(y_all[idx])
-                dist   = dists[idx]
-                correct = label == pred
-                color  = DIGIT_PALETTE[label]
-
-                ax.imshow(X_all[idx].reshape(8, 8), cmap="plasma",
-                          interpolation="nearest", vmin=0, vmax=1)
-                mark = "✓" if correct else "✗"
-                ax.set_title(f"{mark} Clase:{label}  d={dist:.2f}",
-                             color=color, fontsize=7, pad=3)
-                ax.axis("off")
-
-                # Borde de color
-                for spine in ax.spines.values():
-                    spine.set_edgecolor(ACCENT if correct else ACCENT2)
-                    spine.set_linewidth(2)
-
-            fig.suptitle(f"Los 10 dígitos más parecidos a tu input (predicción: {pred})",
-                         color=TEXT, fontsize=10)
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
-
-            # Distribución de clases entre vecinos
-            nn_labels = y_all[nn_idx]
-            st.markdown(f'<div class="sec">// DISTRIBUCIÓN DE CLASES ENTRE VECINOS</div>', unsafe_allow_html=True)
-
-            counts = {d: int(np.sum(nn_labels == d)) for d in range(10) if np.sum(nn_labels == d) > 0}
-            fig, ax = plt.subplots(figsize=(8, 2.5))
-            dax(ax)
-            if counts:
-                ax.bar(list(counts.keys()), list(counts.values()),
-                       color=[DIGIT_PALETTE[k] for k in counts.keys()], alpha=0.85)
-            ax.set_xticks(range(10))
-            ax.set_xlabel("Dígito")
-            ax.set_ylabel("# vecinos")
-            ax.set_title(f"Clases de los {top_n} vecinos más cercanos")
-            fig.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
-
-    # ── MATRIZ DE CONFUSIÓN DEL MODELO ────────────────────────
-    with tab_cm:
-        st.markdown('<div class="sec">// RENDIMIENTO GENERAL DEL MODELO</div>', unsafe_allow_html=True)
-
-        X_te = trained_models[model_name]["X_te"]
-        y_te = trained_models[model_name]["y_te"]
-        y_pred_all = trained_models[model_name]["pipe"].predict(X_te)
-
-        col_m1, col_m2, col_m3 = st.columns(3)
-        acc = accuracy_score(y_te, y_pred_all)
-        for col, label, val in zip(
-            [col_m1, col_m2, col_m3],
-            ["Accuracy global", "Muestras test", "Errores"],
-            [f"{acc*100:.2f}%", str(len(y_te)), str(int((1-acc)*len(y_te)))],
-        ):
-            col.markdown(f"""
-            <div class="info-box" style="text-align:center">
-                <div class="ib-label">{label}</div>
-                <div class="ib-val" style="color:{ACCENT};">{val}</div>
-            </div>""", unsafe_allow_html=True)
-
-        # Matriz
-        cm      = confusion_matrix(y_te, y_pred_all)
-        cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
-
-        fig, axes5 = plt.subplots(1, 2, figsize=(14, 6))
-        fig.patch.set_facecolor(BG)
-
-        for ax, data, fmt, title in [
-            (axes5[0], cm,      "d",    "Conteos absolutos"),
-            (axes5[1], cm_norm, ".2f",  "Normalizada (por fila)"),
-        ]:
-            ax.set_facecolor(SURF)
-            sns.heatmap(data, annot=True, fmt=fmt, ax=ax,
-                        cmap="YlOrRd", linewidths=0.3, linecolor=BG,
-                        xticklabels=range(10), yticklabels=range(10),
-                        cbar_kws={"shrink": 0.75})
-            ax.set_title(f"{model_name} — {title}", color=TEXT, fontsize=10, pad=8)
-            ax.set_xlabel("Predicho", color=TEXT, fontsize=9)
-            ax.set_ylabel("Real",     color=TEXT, fontsize=9)
-            ax.tick_params(colors=TEXT, labelsize=8)
+        # 4. Diferencia
+        ax4 = axes[3]
+        ax4.set_facecolor(C["card"])
+        diff = np.abs(vec.reshape(8,8) - avg)
+        ax4.imshow(diff, cmap="hot", interpolation="bilinear")
+        ax4.set_title("Diferencia |tu - promedio|", fontsize=9)
+        ax4.axis("off")
 
         fig.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
 
-        # F1 por dígito
-        from sklearn.metrics import f1_score as f1s
-        f1_per = f1s(y_te, y_pred_all, average=None, zero_division=0)
+        st.markdown(f"""
+        <div style="color:{C['muted']};font-size:.82rem;margin-top:.5rem;">
+        <b>¿Por qué 8×8?</b> El dataset Digits de sklearn usa imágenes 8×8. 
+        Tu dibujo (300×300 px) se recorta al área del trazo, se centra con padding, 
+        y se reduce a 8×8 con suavizado para que los píxeles sean comparables 
+        con los de entrenamiento.
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.info("Dibuja un dígito primero para ver cómo lo procesa el modelo.")
 
-        fig, ax = plt.subplots(figsize=(9, 3.5))
-        dax(ax)
-        bars = ax.bar(range(10), f1_per, color=DIGIT_PALETTE, alpha=0.85, edgecolor=BG)
-        for bar, v in zip(bars, f1_per):
-            ax.text(bar.get_x()+bar.get_width()/2, v+0.005,
-                    f"{v:.3f}", ha="center", va="bottom", fontsize=8, color=TEXT)
-        ax.set_xticks(range(10))
-        ax.set_xlabel("Dígito")
-        ax.set_ylabel("F1-Score")
-        ax.set_ylim(0, 1.1)
-        ax.set_title(f"F1-Score por dígito — {model_name}")
-        fig.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
+# ── CÓMO FUNCIONA ────────────────────────────
+with tab_how:
+    st.markdown("### Proceso completo de clasificación")
 
-    # ── ¿CÓMO FUNCIONA? ──────────────────────────────────────
-    with tab_how:
-        st.markdown('<div class="sec">// ¿CÓMO FUNCIONA EL CLASIFICADOR?</div>', unsafe_allow_html=True)
+    steps = [
+        ("🖊️ Dibujas", "Tu trazo se captura como imagen PNG de 300×300 píxeles en blanco sobre negro."),
+        ("✂️ Recorte", "Se detecta el bounding box del dígito (área con píxeles blancos) y se recorta."),
+        ("📐 Centrado", "Se añade padding (20% del tamaño) para que el dígito no quede pegado al borde."),
+        ("🔬 Reducción", "La imagen se reduce a 8×8 = 64 píxeles usando antialiasing (LANCZOS) para preservar la forma."),
+        ("📏 Normalización", "Los valores de pixel (0–255) se normalizan a rango 0–1. El StandardScaler del pipeline aplica media/varianza del entrenamiento."),
+        ("🧠 Clasificación", f"El modelo {model_name} recibe el vector de 64 valores y calcula la probabilidad de cada dígito (0–9)."),
+        ("🏆 Decisión", "Se elige el dígito con mayor probabilidad como predicción final."),
+    ]
 
-        explanations = {
-            "Random Forest": {
-                "pasos": [
-                    ("Entrada", "El dígito 8×8 (64 píxeles) entra al bosque."),
-                    ("Árboles de decisión", "200 árboles se entrenaron sobre muestras aleatorias del dataset. Cada árbol aprendió reglas como: 'Si pixel[20] > 0.5 Y pixel[35] < 0.3 → probablemente es 3'."),
-                    ("Votación", "Cada árbol vota por una clase. La clase con más votos gana."),
-                    ("Probabilidad", "La probabilidad es la fracción de árboles que votaron por cada clase."),
-                    ("Fortaleza", "Robusto al ruido. No necesita que el dígito esté perfectamente centrado."),
-                ],
-                "formula": "P(clase k) = (# árboles que votan k) / (# total de árboles)",
-            },
-            "SVM (RBF)": {
-                "pasos": [
-                    ("Espacio de features", "Los 64 píxeles definen un punto en un espacio 64-dimensional."),
-                    ("Kernel RBF", "Transforma el espacio de entrada a uno de mayor dimensión donde las clases son linealmente separables."),
-                    ("Hiperplanos", "Durante el entrenamiento, se calcularon hiperplanos óptimos que separan cada par de clases."),
-                    ("Clasificación", "El punto se asigna a la región correspondiente al dígito más cercano."),
-                    ("Fortaleza", "Excelente en espacios de alta dimensión. Alto accuracy con imágenes bien dibujadas."),
-                ],
-                "formula": "K(x, xᵢ) = exp(-γ ||x - xᵢ||²) → decisión por margen máximo",
-            },
-            "Logistic Regression": {
-                "pasos": [
-                    ("Modelo lineal", "Aprende un vector de pesos w para cada clase (10 vectores de 64 dimensiones)."),
-                    ("Score por clase", "Para cada dígito k calcula: score(k) = w_k · x + b_k (producto punto con el vector de entrada)."),
-                    ("Softmax", "Convierte los 10 scores en probabilidades que suman 1."),
-                    ("Decisión", "Se elige la clase con mayor probabilidad."),
-                    ("Fortaleza", "Rápido y transparente. Los pesos muestran qué píxeles importan más."),
-                ],
-                "formula": "P(k|x) = softmax(Wx + b) = exp(wₖ·x) / Σⱼ exp(wⱼ·x)",
-            },
-            "K-Nearest Neighbors": {
-                "pasos": [
-                    ("Memoria", "KNN almacena todos los 1437 ejemplos de entrenamiento."),
-                    ("Distancia", "Calcula la distancia euclidiana entre tu dígito y todos los de entrenamiento."),
-                    ("Selección", "Selecciona los 5 ejemplos más cercanos (vecinos)."),
-                    ("Votación", "La clase más frecuente entre los 5 vecinos es la predicción."),
-                    ("Fortaleza", "Intuitivo. Literalmente compara tu dígito con los que ya conoce."),
-                ],
-                "formula": "pred = moda({y_i : i ∈ k vecinos más cercanos a x})",
-            },
-            "Gradient Boosting": {
-                "pasos": [
-                    ("Árbol inicial", "Entrena un árbol de decisión simple sobre los datos."),
-                    ("Corrección iterativa", "En cada iteración, un nuevo árbol aprende a corregir los errores del anterior."),
-                    ("150 iteraciones", "Después de 150 correcciones, el modelo es muy preciso."),
-                    ("Suma de árboles", "La predicción final es la suma ponderada de todos los árboles."),
-                    ("Fortaleza", "Muy preciso. Captura patrones complejos que otros modelos pierden."),
-                ],
-                "formula": "F(x) = Σₘ γₘ · hₘ(x) donde cada hₘ corrige errores residuales",
-            },
-            "Naive Bayes": {
-                "pasos": [
-                    ("Prior", "Aprende qué tan frecuente es cada dígito (P(clase))."),
-                    ("Likelihood", "Para cada pixel aprende: dado que es el dígito k, ¿qué tan probable es este valor de intensidad?"),
-                    ("Independencia", "Asume que cada pixel es independiente de los demás (por eso 'naive')."),
-                    ("Bayes", "Combina prior y likelihood para calcular la probabilidad posterior de cada clase."),
-                    ("Limitación", "Los píxeles de un dígito no son independientes, pero funciona sorprendentemente bien."),
-                ],
-                "formula": "P(k|x) ∝ P(k) × Πᵢ P(xᵢ|k)  [Teorema de Bayes]",
-            },
+    for title, desc in steps:
+        st.markdown(f"""
+        <div class="step">
+            <div class="step-n">{title}</div>
+            <div>{desc}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### ¿Por qué a veces falla?")
+    reasons = [
+        ("Estilo diferente", "El modelo fue entrenado con dígitos escritos de una forma particular. Si escribes muy diferente (ej. el 7 con barra, el 1 muy inclinado), puede confundirse."),
+        ("Resolución 8×8", "Al reducir tanto la imagen, detalles importantes se pierden. Un 3 y un 8 pueden verse muy parecidos a 8×8."),
+        ("Posición/tamaño", "Intenta dibujar el dígito grande y centrado en el canvas para mejores resultados."),
+    ]
+    for title, desc in reasons:
+        st.markdown(f"**{title}:** {desc}")
+
+    st.markdown("---")
+    st.markdown("### Modelos disponibles")
+    for nm, info in trained_models.items():
+        descs = {
+            "SVM (RBF)":           "Encuentra hiperplanos de separación en espacio de alta dimensión. Muy preciso.",
+            "Random Forest":       "Voto de 200 árboles de decisión. Robusto y rápido.",
+            "Logistic Regression": "Modelo lineal con softmax. Simple e interpretable.",
+            "KNN (k=5)":           "Busca los 5 ejemplos más similares en el dataset y vota.",
         }
+        st.markdown(f"""
+        <div class="card" style="margin:.3rem 0;">
+            <b style="color:{C['green']};">{nm}</b>
+            <span style="color:{C['muted']};font-size:.85rem;"> · {info['acc']*100:.1f}% accuracy</span><br>
+            <span style="font-size:.85rem;">{descs.get(nm,'')}</span>
+        </div>
+        """, unsafe_allow_html=True)
 
-        info_exp = explanations.get(model_name, {})
-        if info_exp:
-            st.markdown(f"""
-            <div style="background:{CARD};border:1px solid {BORDER};border-radius:12px;
-                        padding:1.2rem;margin-bottom:1rem;">
-                <div style="font-family:'Share Tech Mono';font-size:.7rem;color:{MUTED};
-                            letter-spacing:2px;margin-bottom:.5rem;">FÓRMULA CLAVE</div>
-                <div style="font-family:'Share Tech Mono';font-size:.9rem;color:{ACCENT};
-                            background:{BG};padding:.7rem;border-radius:8px;">
-                    {info_exp['formula']}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+# ── ESTADÍSTICAS ─────────────────────────────
+with tab_stats:
+    st.markdown("### Rendimiento del modelo en datos de test")
 
-            for title, text in info_exp["pasos"]:
-                st.markdown(f"""
-                <div class="step">
-                    <div class="step-num">→ {title.upper()}</div>
-                    <div class="step-text">{text}</div>
-                </div>
-                """, unsafe_allow_html=True)
+    Xte   = trained_models[model_name]["Xte"]
+    yte   = trained_models[model_name]["yte"]
+    ypred = trained_models[model_name]["pipe"].predict(Xte)
 
-        # Comparativa de modelos
-        st.markdown('<div class="sec">// COMPARATIVA DE TODOS LOS MODELOS</div>', unsafe_allow_html=True)
+    # Métricas rápidas
+    from sklearn.metrics import f1_score, precision_score, recall_score
+    c1, c2, c3, c4 = st.columns(4)
+    for col, lbl, val in zip(
+        [c1, c2, c3, c4],
+        ["Accuracy","F1 Macro","Precision","Recall"],
+        [accuracy_score(yte,ypred),
+         f1_score(yte,ypred,average="macro"),
+         precision_score(yte,ypred,average="macro",zero_division=0),
+         recall_score(yte,ypred,average="macro",zero_division=0)],
+    ):
+        col.markdown(f"""
+        <div class="card" style="text-align:center;">
+            <div class="label">{lbl}</div>
+            <div class="value" style="color:{C['green']};">{val*100:.1f}%</div>
+        </div>""", unsafe_allow_html=True)
 
-        rows_cmp = []
-        for nm, info_m in trained_models.items():
-            rows_cmp.append({
-                "Modelo": f"{AVAILABLE_MODELS[nm]['icon']} {nm}",
-                "Accuracy": f"{info_m['acc']*100:.2f}%",
-                "Tipo":     "Ensemble" if "Forest" in nm or "Boosting" in nm
-                            else "Kernel" if "SVM" in nm
-                            else "Lineal" if "Logistic" in nm
-                            else "Instancia" if "Nearest" in nm
-                            else "Probabilístico",
-                "Velocidad": "⚡⚡⚡" if "Naive" in nm or "Logistic" in nm
-                             else "⚡⚡" if "Forest" in nm or "KNN" in nm
-                             else "⚡",
-            })
-        df_cmp = pd.DataFrame(rows_cmp).set_index("Modelo")
-        st.dataframe(df_cmp, use_container_width=True)
+    st.markdown("")
 
-# ──────────────────────────────────────────────────────────────
-# FOOTER
-# ──────────────────────────────────────────────────────────────
-st.markdown("---")
-st.markdown(f"""
-<div style='text-align:center;color:{MUTED};font-family:Share Tech Mono;
-            font-size:.72rem;letter-spacing:2px;'>
-    DIGIT.AI · SCIKIT-LEARN + STREAMLIT · DIGITS DATASET (sklearn)
-</div>
-""", unsafe_allow_html=True)
+    col_cm, col_f1 = st.columns([1, 1])
+
+    with col_cm:
+        st.markdown("**Matriz de confusión**")
+        cm = confusion_matrix(yte, ypred)
+        cm_n = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+        import seaborn as sns
+        fig, ax = plt.subplots(figsize=(6, 5))
+        ax.set_facecolor(C["card"])
+        sns.heatmap(cm_n, annot=cm, fmt="d", ax=ax,
+                    cmap="YlOrRd", linewidths=.3, linecolor=C["bg"],
+                    xticklabels=range(10), yticklabels=range(10),
+                    cbar_kws={"shrink":.7})
+        ax.set_xlabel("Predicho"); ax.set_ylabel("Real")
+        ax.set_title(model_name, fontsize=9)
+        ax.tick_params(colors=C["text"], labelsize=7)
+        fig.tight_layout()
+        st.pyplot(fig); plt.close(fig)
+
+    with col_f1:
+        st.markdown("**F1 por dígito**")
+        f1_per = f1_score(yte, ypred, average=None, zero_division=0)
+        fig, ax = plt.subplots(figsize=(6, 5))
+        ax.set_facecolor(C["card"])
+        bars = ax.bar(range(10), f1_per, color=DIGIT_CLR, alpha=.85, edgecolor=C["bg"])
+        for bar, v in zip(bars, f1_per):
+            ax.text(bar.get_x()+bar.get_width()/2, v+.005,
+                    f"{v:.2f}", ha="center", va="bottom", fontsize=7)
+        ax.set_xticks(range(10)); ax.set_ylim(0, 1.1)
+        ax.set_xlabel("Dígito"); ax.set_ylabel("F1")
+        ax.set_title("F1-Score por clase", fontsize=9)
+        ax.grid(axis="y", alpha=.4)
+        fig.tight_layout()
+        st.pyplot(fig); plt.close(fig)
+
+# ── MIS CORRECCIONES ─────────────────────────
+with tab_learn:
+    df_corr = load_corrections()
+    st.markdown(f"### 📚 Correcciones guardadas: **{len(df_corr)}**")
+
+    if len(df_corr) == 0:
+        st.info("Aún no has hecho ninguna corrección. Cuando el modelo falle, usa los botones de corrección y aquí aparecerán.")
+    else:
+        # Distribución de clases corregidas
+        st.markdown("**Distribución de tus correcciones por dígito:**")
+        counts = df_corr["true_label"].value_counts().sort_index()
+
+        fig, ax = plt.subplots(figsize=(8, 3))
+        ax.set_facecolor(C["card"])
+        bars = ax.bar(counts.index, counts.values,
+                      color=[DIGIT_CLR[i] for i in counts.index],
+                      alpha=.85, edgecolor=C["bg"])
+        for bar, v in zip(bars, counts.values):
+            ax.text(bar.get_x()+bar.get_width()/2, v+.1,
+                    str(int(v)), ha="center", va="bottom", fontsize=9)
+        ax.set_xticks(range(10)); ax.set_xlabel("Dígito"); ax.set_ylabel("Ejemplos")
+        ax.set_title("Mis correcciones por clase")
+        fig.tight_layout()
+        st.pyplot(fig); plt.close(fig)
+
+        # Galería de las últimas correcciones
+        st.markdown("**Últimas 20 correcciones:**")
+        recent = df_corr.tail(20).iloc[::-1]
+        cols_g = st.columns(10)
+        for i, (_, row) in enumerate(recent.iterrows()):
+            vec = np.array(json.loads(row["pixels"]))
+            lbl = int(row["true_label"])
+            col = cols_g[i % 10]
+            with col:
+                fig_s, ax_s = plt.subplots(figsize=(1.2, 1.2))
+                fig_s.patch.set_facecolor(C["bg"])
+                ax_s.set_facecolor(C["bg"])
+                ax_s.imshow(vec.reshape(8, 8), cmap="plasma",
+                            interpolation="nearest", vmin=0, vmax=1)
+                ax_s.set_title(str(lbl), color=DIGIT_CLR[lbl],
+                               fontsize=9, pad=2, fontweight="bold")
+                ax_s.axis("off")
+                fig_s.tight_layout(pad=0)
+                st.pyplot(fig_s); plt.close(fig_s)
+
+        st.divider()
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            if st.button("🔄 Re-entrenar ahora con mis correcciones", use_container_width=True, type="primary"):
+                with st.spinner("Re-entrenando…"):
+                    new_pipe = retrain_with_corrections(model_name)
+                    st.session_state.retrained_pipe = new_pipe
+                st.success(f"✅ Modelo actualizado con {len(df_corr)} correcciones!")
+        with col_r2:
+            if st.button("🗑️ Borrar todas las correcciones", use_container_width=True):
+                if os.path.exists(CORRECTIONS_FILE):
+                    os.remove(CORRECTIONS_FILE)
+                st.session_state.n_corrections = 0
+                st.session_state.retrained_pipe = None
+                st.success("Correcciones borradas.")
+                st.rerun()
